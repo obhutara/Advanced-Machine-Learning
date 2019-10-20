@@ -1,0 +1,1164 @@
+########################################
+### Lab 2 - Hidden Markov Models
+### By Max Fischer
+### TDDE15 - Advanced Machine Learning
+### Linköpings university
+########################################
+############### Functions ##############
+
+# Name: get_alpha
+# Input:
+#   possible_states: States that a hidden variable can be
+#   emiss_model: Emission model (matrix)
+#   trans_model: Transition model (matrix)
+#   obs: Observation in time step t
+#   alpha_prev: Alpha in time step t-1
+get_alpha <- function(possible_states, emiss_model, trans_model, obs, alpha_prev) {
+  
+  alpha <- NULL
+  
+  # For each possible state (sector)
+  # This is every state in X_t
+  for (state in possible_states) {
+      
+    # Given a state, how likely is our
+    # observation
+    emission <- emiss_model[state, obs]
+    
+    # For every possible state (t_1), how
+    # likely is each of the new states
+    #
+    # This is then weighted with alpha from
+    # t_1 of each state. Alpha is some kind
+    weighted_transition <- sum(
+      sapply(possible_states, function(z) {
+        alpha_prev[z] * trans_model[z, state]
+      })
+    )
+    
+    # Alpha for every possible state in Z_t
+    alpha[state] <- emission * weighted_transition
+  }
+  return (alpha)
+}
+
+# Name: get_beta
+# Input:
+#   possible_states: States that a hidden variable can be
+#   emiss_model: Emission model (matrix)
+#   trans_model: Transition model (matrix)
+#   obs: Observation in time step t+1
+#   alpha_prev: Alpha in time step t+1
+get_beta <- function(possible_states, trans_model, emiss_model, obs_next, beta_next) {
+  
+  beta <- NULL
+  
+  # For each possible state (sector)
+  # This is every state in X_t
+  for (state in possible_states) {
+    beta[state] <- sum(
+      sapply(possible_states, function(z) {
+        beta_next[z] * emiss_model[z, obs_next] * trans_model[state, z]
+      })
+    )
+  }
+  return (beta)
+}
+
+# Name: forward_backward
+# Input:
+#   possible_states: States that a hidden variable can be
+#   trans_model: Transition model (matrix)
+#   emiss_model: Emission model (matrix)
+#   obs_vars: Observed variables
+forward_backward <- function(possible_states, trans_model, emiss_model, obs_vars) {
+  T <- length(obs_vars)
+  alpha <- matrix(NA, nrow = T, ncol = length(possible_states))
+  beta <- matrix(NA, nrow = T, ncol = length(possible_states))
+  
+  # Forward
+  # Initialize alpha: 
+  # p(Z_0) (place robot in any state with 1/10 probability)
+  first_obs <- obs_vars[1]
+  initial <- rep(0.1, 10)
+  alpha[1, ] <- emiss_model[, first_obs] * initial # alpha[1] = p(x_0|Z_0)*p(Z_0)
+  
+  # For every time step t = 2,...,T
+  for (t in 2:T) {
+    # Generate alpha for time step t
+    alpha[t, ] <- get_alpha(possible_states = possible_states,
+                        emiss_model = emiss_model,
+                        trans_model = trans_model,
+                        obs = obs_vars[t],
+                        alpha_prev = alpha[t - 1, ])
+  }
+  
+  # Backward
+  # Initalize beta
+  beta[T, ] <- 1
+  
+  # For every time step t = (T-1),...,1
+  for (t in (T-1):1) {
+    # Generate beta for time step t
+    beta[t, ] <- get_beta(possible_states = possible_states,
+                          emiss_model = emiss_model,
+                          trans_model = trans_model,
+                          obs = obs_vars[t+1],
+                          beta_next = beta[t+1, ])
+  }
+  return (list(alpha = alpha, beta = beta))
+}
+
+# Name: filtering
+# Input:
+#   alphas: Alpha probabilities generated in the Forward Backward algorithm
+filtering <- function(alphas) {
+  filtering <- matrix(NA,
+                      nrow = dim(alphas)[1],
+                      ncol = dim(alphas)[2])
+  
+  for (t in 1:dim(alphas)[1]){
+    filtering[t, ] <- alphas[t, ]/sum(alphas[t, ])
+  }
+
+  return(filtering)
+}
+
+# Name: smoothing
+# Input:
+#   alphas: Alpha probabilities generated in the Forward Backward algorithm
+#   betas: Beta probabilities generated in the Forward Backward algorithm
+smoothing <- function(alphas, betas) {
+  smoothing <- matrix(NA,
+                      nrow = dim(alphas)[1],
+                      ncol = dim(alphas)[2])
+  
+  for (t in 1:dim(alphas)[1]) {
+    smoothing[t, ] <- (alphas[t, ] * betas[t, ]) / (sum(alphas[t, ] * betas[t, ]))
+  }
+  
+  return (smoothing)
+}
+
+# Name: viterbi_algo
+# Input:
+#   possible_states: States that a hidden variable can be
+#   trans_model: Transition model (matrix)
+#   emiss_model: Emission model (matrix)
+#   obs_vars: Observed variables
+viterbi_algo <- function(possible_states, trans_model, emiss_model, obs_vars) {
+  T <- length(obs_vars)
+  
+  omega <- matrix(NA,
+                  nrow = T,
+                  ncol = length(possible_states))
+  psi <- matrix(NA,
+                  nrow = T,
+                  ncol = length(possible_states))
+  Z <- NULL
+  
+  # Initialize omega_0
+  initial <- rep(0.1, 10)
+  first_obs <- obs_vars[1]
+  omega_init <- log(initial) + log(emiss_model[, first_obs])
+
+  for (t in 0:(T-1)) {
+    obs <- obs_vars[t + 1]
+    
+    for (state in possible_states) {
+      trans_omega <- sapply(possible_states, function(z) {
+        if (t == 0) {
+          log(trans_model[z, state]) + omega_init
+        } else {
+          log(trans_model[z, state]) + omega[t, z]
+        }
+
+      })
+      max <- max(trans_omega)
+      
+      omega[t + 1, state] <- emiss_model[state, obs] + max
+      psi[t + 1, state] <- which.max(trans_omega)
+    }
+  }
+  
+  Z[T] <- which.max(omega[T, ])
+  
+  for (t in (T-1):0) {
+    Z[t] <- psi[t+1, Z[t+1]]
+  }
+  
+  return (Z)
+}
+
+# Name: viterbi_algo
+# Input:
+#   prediction: Vector of predictions
+#   true: Vector of true states
+accuracy <- function(prediction, true) {
+  confusion_matrix <- table(prediction, true)
+  accuracy <- sum(diag(confusion_matrix))/sum(confusion_matrix)
+  return (accuracy)
+}
+
+################ Setup ################
+# Install and load necessary packages
+if (!require(HMM)) {
+  install.packages("HMM")
+}
+
+library(HMM)
+
+if (!require(entropy)) {
+  install.packages("entropy")
+}
+
+library(entropy)
+################ Task 1 ################
+# A robot walks around a ring. The ring
+# is divided into 10 sectors. The robot
+# is in one sector at any given time step
+# and it's equal probable for the robot
+# to stay in the state as it is to move
+# to the next state.
+
+# The robot has a tracking device.
+# If the robot is in sector i, the tracking
+# device will report that the robot is
+# in the sectors [i - 2, i + 2] with
+# equal probability.
+
+# Create transition matrix from description above
+# Each row consists of: p(z^t|z^t-1), t = 1, ..., 10
+transition_vector <- c(0.5, 0.5, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0.5, 0.5, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0.5, 0.5, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0.5, 0.5, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0.5, 0.5, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0.5, 0.5, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0.5, 0.5, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0.5, 0.5, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0.5, 0.5,
+                       0.5, 0, 0, 0, 0, 0, 0, 0, 0, 0.5)
+transition_matrix <- matrix(data = transition_vector,
+                              nrow = 10,
+                              ncol = 10)
+
+# Create emission matrix from description above
+emission_vector <- c(0.2, 0.2, 0.2, 0, 0, 0, 0, 0, 0.2, 0.2,
+                     0.2, 0.2, 0.2, 0.2, 0, 0, 0, 0, 0, 0.2,
+                     0.2, 0.2, 0.2, 0.2, 0.2, 0, 0, 0, 0, 0,
+                     0, 0.2, 0.2, 0.2, 0.2, 0.2, 0, 0, 0, 0,
+                     0, 0, 0.2, 0.2, 0.2, 0.2, 0.2, 0, 0, 0,
+                     0, 0, 0, 0.2, 0.2, 0.2, 0.2, 0.2, 0, 0,
+                     0, 0, 0, 0, 0.2, 0.2, 0.2, 0.2, 0.2, 0,
+                     0, 0, 0, 0, 0, 0.2, 0.2, 0.2, 0.2, 0.2,
+                     0.2, 0, 0, 0, 0, 0, 0.2, 0.2, 0.2, 0.2,
+                     0.2, 0.2, 0, 0, 0, 0, 0, 0.2, 0.2, 0.2)
+emission_matrix <- matrix(data = emission_vector,
+                          nrow = 10,
+                          ncol = 10)
+
+# Initialize a Hidden Markov Model (HMM)
+# States are the hidden variables
+HMM.states <- c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+
+# Symbols are the observable variables
+HMM.symbols <- c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+
+HMM <- initHMM(States = HMM.states,
+                    Symbols = HMM.symbols,
+                    startProb = rep(0.1, 10),
+                    transProbs = transition_matrix,
+                    emissionProbs = emission_matrix)
+
+################ Task 2 ################
+# Simulate 100 time steps from the model
+# above
+T <- 100
+HMM.sim <- simHMM(hmm = HMM,
+                  length = T)
+
+################ Task 3 ################
+
+# Generate alpha and beta probabilities
+# from forward-backward algorithm
+FB <- forward_backward(possible_states = 1:10,
+                       trans_model = transition_matrix,
+                       emiss_model = emission_matrix,
+                       obs_vars = HMM.sim$observation)
+
+# Filtering probabilities
+filtering_100 <- filtering(FB$alpha)
+
+# Smoothing probabilities
+smoothing_100 <- smoothing(alphas = FB$alpha, betas = FB$beta)
+
+# Viterbi - Most probable path
+viterbi_100 <- viterbi_algo(possible_states = 1:10,
+                        trans_model = transition_matrix,
+                        emiss_model = emission_matrix,
+                        obs_vars = HMM.sim$observation)
+
+################ Task 4 ################
+
+# Predict based on the highest probability
+filtering_prediction_100 <- apply(filtering_100, MARGIN = 1, which.max)
+smoothing_prediction_100 <- apply(smoothing_100, MARGIN = 1, which.max)
+
+# Calculate accuracy from prediction
+accuracy_filtering_100 <- accuracy(prediction = filtering_prediction,
+                               true = HMM.sim$states)
+accuracy_smoothing_100 <- accuracy(prediction = smoothing_prediction,
+                               true = HMM.sim$states)
+
+################ Task 5 ################
+# .....
+
+################ Task 6 ################
+
+# Simulate 200 observations and hidden state
+# from the Hidden Markov Model
+HMM.sim_200 <- simHMM(hmm = HMM,
+                      length = 200)
+
+# Generating alpha and beta predictions
+FB_200 <- forward_backward(possible_states = 1:10,
+                           trans_model = transition_matrix,
+                           emiss_model = emission_matrix,
+                           obs_vars = HMM.sim_200$observation)
+
+# Filtering probabilities
+filtering_200 <- filtering(FB_200$alpha)
+
+# Predict based on the highest probability
+filtering_prediction_200 <- apply(filtering_200, MARGIN = 1, which.max)
+
+# Entroy of 100 and 200 observations
+entropy_100 <- entropy.empirical(filtering_prediction_100)
+entropy_200 <- entropy.empirical(filtering_prediction_200)
+
+################ Task 7 ################
+
+# Generate probabilities of the hidden state
+# for time step 101
+t_101 <- transition_matrix %*% filtering_100[100, ]
+
+
+########################################
+### Lab 3 - State-Space Models
+### By Max Fischer
+### TDDE15 - Advanced Machine Learning
+### Linköpings university
+########################################
+############### Functions ##############
+
+# Name: kalman
+# Input:
+#   T: Number of time steps
+#   A: How the mean of z_t will be affected by z_(t-1)
+#      Used in transition model
+#   B: How much the control variable will affect
+#      z_t. Used in transition model
+#   C: Scale the mean (z_t) in the emission model
+#   Q: Covariate matrix in the emission model
+#   R: Covariate matrix in the transition model
+#   obs: All observations
+kalman <- function(T, A, B, C, Q, R, obs, u, init_var = 1) {
+  my <- NULL
+  sigma <- NULL
+  my_unweighted <- NULL
+  sigma_unweighted <- NULL
+  kalman_gain <- NULL
+  
+  # Our best guess is that my_1 is our first observation
+  my[1] <- obs[1]
+  
+  # We don't know what sigma_1 is, so lets just set it to
+  # a random number. We chose 1
+  sigma[1] <- init_var
+  
+  for (t in 2:T) {
+    # Calculate the unweighted prediction of the mean
+    my_unweighted[t] <- A[t]*my[t - 1] + B[t]*u[t]
+    
+    # Calculate the unweighted prediction of the covariate matrix
+    sigma_unweighted[t] <- A[t]*sigma[t - 1]*t(A[t]) + R[t]
+    
+    # Kalman gain.
+    # Used to weight between our unweighted prediction and the
+    # observation
+    kalman_gain[t] <- sigma_unweighted[t]*t(C[t]) * inv(C[t]*sigma_unweighted[t]*t(C[t] + Q[t]))
+    
+    # Calculate the weighted mean, thus our prediction of the
+    # hidden state
+    my[t] <- my_unweighted[t] + kalman_gain[t]*(obs[t] - C[t]*my_unweighted[t])
+    
+    # Calculate the weighted covariance matrix, thus our prediction
+    # of the predition error
+    sigma[t] <- (I - kalman_gain[t]*C[t])*sigma_unweighted[t]
+  }
+  
+  return (list(my = my, sigma = sigma))
+}
+
+# Name: sample_emission_model
+# Input:
+#   z_t_1: Hidden state in previous time step
+#   sd: Standard deviation of the models
+#       in the mixed model
+sample_transition_model <- function(z_t_1, sd = 1) {
+  
+  # Sample from which model in the mixed model
+  # we're sampling from
+  model <- sample(x = 0:2, size = 1)
+  
+  # Return the sample
+  return (rnorm(n = 1,
+                mean = z_t_1 + model,
+                sd = sd))
+}
+
+# Name: sample_emission_model
+# Input:
+#   z_t: Hidden state in the current time step
+#   sd: Standard deviation of the models
+#       in the mixed model
+sample_emission_model <- function(z_t, sd = 1) {
+  
+  # Sample from which model in the mixed model
+  # we're sampling from
+  model <- sample(x = -1:1, size = 1)
+  
+  # Return the sample
+  return (rnorm(n = 1,
+                mean = z_t + model,
+                sd = sd))
+}
+
+density_emission_model <- function(x_t, z_t, sd = 1) {
+  models <- sapply(-1:1, function(x) {
+    dnorm(x = x_t,
+          mean = z_t + x,
+          sd = sd)
+  })
+  
+  return (sum(models)/3)
+}
+
+# Name: sample_data
+# Input:
+#   T: Number of samples (time steps)
+sample_data <- function(T, sd_emission = 1, sd_transition = 1) {
+  
+  state_variable <- NULL
+  observed_variable <- NULL
+  
+  # Inizialize z_1
+  # Defined as Uniform(0, 100)
+  state_variable[1] <- runif(n = 1,
+                             min = 0,
+                             max = 100)
+  
+  # Sample first observed variable from the hidden variable
+  observed_variable[1] <- sample_emission_model(z_t = state_variable[1],
+                                                sd = sd_emission)
+  
+  # For every time step t = 1,...,T
+  # Sample one hidden variable and one observed variable
+  for (t in 2:T) {
+    state_variable[t] <- sample_transition_model(z_t_1 = state_variable[t - 1])
+    observed_variable[t] <- sample_emission_model(z_t = state_variable[t],
+                                                  sd = sd_emission)
+  }
+  
+  return(list(z = state_variable, x = observed_variable))
+}
+
+# Name: particle_filter
+# Input:
+#   M: Number of particles
+#   obs: Observations for each time step
+particle_filter <- function(M, obs, sd_emission = 1, sd_transition = 1, fix_weights = 0) {
+  
+  T <- length(obs)
+  
+  # Create matrix that will contain all
+  # particles for each time step
+  particles <- matrix(NA,
+                      nrow = T,
+                      ncol = M)
+  temp_particles <- NULL
+  
+  # Generate initial M particles,
+  # Uniform(0, 100)
+  particles[1, ] <- runif(n = M,
+                     min = 0,
+                     max = 100)
+  
+  weights <- NULL
+  
+  for (t in 2:T) {
+    for (m in 1:M) {
+      temp_particles[m] <- sample_transition_model(z_t_1 = particles[t - 1, m])
+      
+      if (fix_weights == 0) {
+        weights[m] <- density_emission_model(x_t = obs[t],
+                                             z_t = temp_particles[m],
+                                             sd = sd_emission)
+      } else {
+        weights[m] <- fix_weights
+      }
+
+    }
+
+    particles[t, ] <- sample(x = temp_particles,
+                           size = M,
+                           replace = TRUE,
+                           prob = weights)
+  }
+  
+  return (particles)
+}
+
+# Name: visualize_particles
+# Input:
+#   particles: Particles for each time step
+#   obs: Observations for each time step
+#   t: Current time step
+visualize_particles <- function(particles, true, t) {
+  M <- dim(particles)[2]
+  
+  hist(x = particles[t, ], 
+       breaks = 20,
+       main = paste('t = ', t), 
+       xlab = 'Particles')
+  points(x = particles[t, ],
+         y = rep(0, M),
+         pch = 16,
+         col = rgb(0, 0, 0, 0.3))
+  abline(v = mean(particles[t, ]), col = 'red')
+  abline(v = true[t], col = 'blue')
+  legend('topright',
+         legend = c("Particles", "Particle mean", "Observation"),
+         col = c(rgb(0, 0, 0, 1), 'red', 'blue'),
+         pch = c(16, NA, NA),
+         lty = c(NA, 1, 1))
+}
+
+################ Setup ################
+
+################ Task 1 ################
+T <- 100
+M <- 100
+
+# Generate sample data
+samples <- sample_data(T)
+
+# Generate particles for each time step
+particles <- particle_filter(M = M,
+                             obs = samples$x)
+
+# Visualization of particles, sd = 1, t = {1, 40, 80, 100}
+par(mfrow = c(2, 2))
+visualize_particles(particles = particles, true = samples$z, t = 1)
+visualize_particles(particles = particles, true = samples$z, t = 40)
+visualize_particles(particles = particles, true = samples$z, t = 80)
+visualize_particles(particles = particles, true = samples$z, t = 100)
+
+################ Task 2 ################
+
+# Generate sample data
+samples_5 <- sample_data(T,
+                         sd_emission = 5)
+samples_50 <- sample_data(T,
+                           sd_emission = 50)
+
+# Generate particles for each time step
+particles_5 <- particle_filter(M = M,
+                             obs = samples_5$x,
+                             sd_emission = 5)
+particles_50 <- particle_filter(M = M,
+                               obs = samples_50$x,
+                               sd_emission = 50)
+
+# Visualization of particles, sd = 5, t = {1, 40, 80, 100}
+par(mfrow = c(2, 2))
+visualize_particles(particles = particles_5, true = samples$z, t = 1)
+visualize_particles(particles = particles_5, true = samples$z, t = 40)
+visualize_particles(particles = particles_5, true = samples$z, t = 80)
+visualize_particles(particles = particles_5, true = samples$z, t = 100)
+
+# Visualization of particles, sd = 50, t = {1, 40, 80, 100}
+par(mfrow = c(2, 2))
+visualize_particles(particles = particles_50, true = samples$z, t = 1)
+visualize_particles(particles = particles_50, true = samples$z, t = 40)
+visualize_particles(particles = particles_50, true = samples$z, t = 80)
+visualize_particles(particles = particles_50, true = samples$z, t = 100)
+
+################ Task 3 ################
+
+# Generate sample data
+samples_5 <- sample_data(T,
+                         sd_emission = 1)
+
+# Generate particles for each time step
+particles_5 <- particle_filter(M = M,
+                               obs = samples_5$x,
+                               sd_emission = 1,
+                               fix_weights = 1)
+
+# Visualization of particles, sd = 1,fixed weights = 1, t = {1, 40, 80, 100}
+par(mfrow = c(2, 2))
+visualize_particles(particles = particles_50, true = samples$z, t = 1)
+visualize_particles(particles = particles_50, true = samples$z, t = 40)
+visualize_particles(particles = particles_50, true = samples$z, t = 80)
+visualize_particles(particles = particles_50, true = samples$z, t = 100)
+
+########################################
+### Lab 4 - Gaussian Process Regression and Classification
+### By Max Fischer
+### TDDE15 - Advanced Machine Learning
+### Linköpings university
+########################################
+############### Functions ##############
+
+# Name: squared_exponential
+# Input:
+#   x: Observations
+#   x_star: Observations
+#   sigma_f: Standard diviation of f
+#   l: Smoothness factor
+squared_exponential <- function(x, x_star, sigma_f, l) {
+  n1 <- length(x)
+  n2 <- length(x_star)
+  K <- matrix(NA,n1,n2)
+  for (i in 1:n2){
+    K[,i] <- sigma_f^2*exp(-0.5*( (x-x_star[i])/l)^2 )
+  }
+  return(K)
+}
+
+# Name: nested_squared_exponential
+# Input:
+#   x: Observations
+#   y: Observations
+#   sigma_f: Standard diviation of f
+#   l: Controls correlation between same day in different years
+nested_squared_exponential <- function(sigma_f, l) {
+  rval <- squared_exponential <- function(x, y = NULL) {
+    n1 <- length(x)
+    n2 <- length(y)
+    K <- matrix(NA,n1,n2)
+    for (i in 1:n2){
+      K[,i] <- sigma_f^2*exp(-0.5*( (x-y[i])/l)^2 )
+    }
+    return(K)
+  }
+  
+  class(rval) <- 'kernel'
+  return (rval)
+}
+
+# Name: squared_exponential
+# Input:
+#   x: Observations
+#   y: Observations
+#   sigma_f: Standard diviation of f
+#   l1: Controls periodic part of the correlation
+#   l1: Controls correlation between same day in different years
+general_periodic_kernel <- function(sigma_f, l1, l2, d) {
+  rval <- function (x, y = NULL) {
+    r <- abs(x - y)
+    return (
+      (sigma_f^2)*exp(-2*(sin(pi*r/d)^2)/(l1^2))*exp(-0.5*(r/l2)^2)
+    )
+  }
+  
+  class(rval) <- 'kernel'
+  return (rval)
+}
+
+# Name: posterior_GP
+# Input:
+#   x: Observations
+#   y: Observations
+#   x_star: Values to predict posterior mean of f over
+#   kernel: Covariance function
+#   sigma_n: Standard diviation of the measured data
+#   sigma_f: Standard diviation of f
+#   l: Controls correlation between same day in different years
+posterior_GP <- function(x, y, x_star, kernel, sigma_n, sigma_f, l) {
+  
+  # Number of observations
+  n <- length(x)
+  
+  # Calculate the covariance matricies:
+  # k(X, X), k(X, X*), k(X*, X*)
+  K_x_x <- squared_exponential(x = x,
+                               x_star = x,
+                               sigma_f = sigma_f,
+                               l = l)
+  K_x_xstar <- squared_exponential(x = x,
+                                   x_star = x_star,
+                                   sigma_f = sigma_f,
+                                   l = l)
+  K_xstar_xstar <- squared_exponential(x = x_star,
+                                       x_star = x_star,
+                                       sigma_f = sigma_f,
+                                       l = l)
+  
+  # Compute the Choleski factorization of 
+  # k(X, X) + sigma_n^2
+  # (covariance matrix of y)
+  #
+  # As chol returns the upper triangular part and
+  # we need the lower, we transpose it
+  L_upper <- chol(K_x_x + (sigma_n^2)*diag(n))
+  L_lower <- t(L_upper)
+  
+  # Compute alpha, used to compute the
+  # posterior mean of f
+  alpha_b <- solve(a = L_lower,
+                             b = y)
+  alpha <- solve(a = t(L_lower),
+                 b = alpha_b)
+  
+  # Compute posterior mean of f
+  posterior_mean_f <- t(K_x_xstar) %*% alpha
+  
+  # Compute posterior covariance matrix of f
+  v <- solve(a = L_lower,
+             b = K_x_xstar)
+  posterior_covariance_matrix_f <- K_xstar_xstar - t(v) %*% v
+  
+  # As we only want the variance of f, we extract the
+  # diagonal in the covariance matrix of f
+  posterior_variance_f <- diag(posterior_covariance_matrix_f)
+  
+  return (list(mean = posterior_mean_f, variance = posterior_variance_f))
+}
+
+# Name: posterior_GP
+# Input:
+#   mean: Mean to be plotted along the y-axis
+#   interval: Values to be plotted along the x-axis
+#   variance: Variance of the mean
+#   observations: Measurements done
+visualize_GP <- function(mean, interval, variance = NULL, observations) {
+  
+  if (!is.null(variance)) {
+    # Compute confidence interval
+    CI <- data.frame(upper = mean + 1.96*sqrt(variance),
+                     lower = mean - 1.96*sqrt(variance))
+    
+    # Compute visually nice y-lim
+    ylim <- c(min(CI$lower) - 1,
+              max(CI$upper) + 1)
+    
+    plot(x = interval,
+         y = mean,
+         type = 'l',
+         col = 'red',
+         ylab = 'Posterior mean',
+         xlab = 'Interval',
+         ylim = ylim)
+    
+    # Draw confidence interval on plot
+    polygon(x = c(rev(interval), interval),
+            y = c(rev(CI$upper), CI$lower),
+            col = rgb(0, 0, 0, 0.3)) 
+    
+    # Add observations as points
+    points(x = observations$x,
+           y = observations$y,
+           col = 'blue',
+           pch = 16)
+    
+    # Add legend to top right corner
+    legend('topright',
+           legend = c('Mean of f', '95 % CI', 'Observations'),
+           col = c('red', rgb(0, 0, 0, 0.3), 'blue'),
+           lty = c(1, NA, NA),
+           pch = c(NA, 15, 16))
+    
+  } else {
+    
+    # Compute visually nice y-lim
+    ylim <- c(min(observations$y) - 1,
+              max(observations$y) + 1)
+    
+    plot(x = interval,
+         y = mean,
+         type = 'l',
+         col = 'red',
+         ylab = 'Posterior mean',
+         xlab = 'Interval',
+         ylim = ylim)
+    
+    # Add observations as points
+    points(x = observations$x,
+           y = observations$y,
+           col = 'blue',
+           pch = 16)
+    
+    # Add legend to top right corner
+    legend('topright',
+           legend = c('Mean of f', 'Observations'),
+           col = c('red', 'blue'),
+           lty = c(1, NA),
+           pch = c(NA, 16))
+  }
+  
+}
+
+################ Setup ################
+par(mfrow = c(1, 1))
+
+############## Task 2.1.1 #############
+# See functions:
+# posterior_GP
+# squared_exponential
+
+############## Task 2.1.2 #############
+
+# Set hyperparameters
+sigma_f <- 1
+l <- 0.3
+
+# Set standard deviation of measurement
+sigma_n <- 0.1
+
+# Measurements
+observations <- data.frame(x = c(0.4),
+                           y = c(0.719))
+
+# Set interval to get posterior from
+interval <- seq(from = -1,
+                to = 1,
+                length.out = 100)
+
+# Get posterior mean and variance of f
+posterior_f <- posterior_GP(x = observations$x,
+                            y = observations$y,
+                            x_star = interval,
+                            sigma_f = sigma_f,
+                            l = l,
+                            sigma_n = sigma_n)
+
+# Visalize posterior mean and CI of posterior mean
+visualize_GP(mean = posterior_f$mean,
+             interval = interval,
+             variance = posterior_f$variance,
+             observations = observations)
+
+############## Task 2.1.3 #############
+
+# Add new observation
+observations <- data.frame(x = c(0.4, -0.6),
+                           y = c(0.719, 0.044))
+
+# Get posterior mean and variance of f
+posterior_f <- posterior_GP(x = observations$x,
+                            y = observations$y,
+                            x_star = interval,
+                            sigma_f = sigma_f,
+                            l = l,
+                            sigma_n = sigma_n)
+
+# Visalize posterior mean and CI of posterior mean
+visualize_GP(mean = posterior_f$mean,
+             interval = interval,
+             variance = posterior_f$variance,
+             observations = observations)
+
+############## Task 2.1.4 #############
+
+# Add new observation
+observations <- data.frame(x = c(-1.0, -0.6, -0.2, 0.4, 0.8),
+                           y = c(0.768, -0.044, -0.940, 0.719, -0.664))
+
+# Get posterior mean and variance of f
+posterior_f <- posterior_GP(x = observations$x,
+                            y = observations$y,
+                            x_star = interval,
+                            sigma_f = sigma_f,
+                            l = l,
+                            sigma_n = sigma_n)
+
+# Visalize posterior mean and CI of posterior mean
+visualize_GP(mean = posterior_f$mean,
+             interval = interval,
+             variance = posterior_f$variance,
+             observations = observations)
+
+############## Task 2.1.5 #############
+
+# Update hyperparameters
+sigma_f <- 1
+l <- 1
+
+# Get posterior mean and variance of f
+posterior_f <- posterior_GP(x = observations$x,
+                            y = observations$y,
+                            x_star = interval,
+                            sigma_f = sigma_f,
+                            l = l,
+                            sigma_n = sigma_n)
+
+# Visalize posterior mean and CI of posterior mean
+visualize_GP(mean = posterior_f$mean,
+             interval = interval,
+             variance = posterior_f$variance,
+             observations = observations)
+
+################ Setup ################
+
+# Install packages if not already installed
+if (!require(kernlab)) {
+  install.packages('kernlab')
+}
+
+# Import packages
+library(kernlab)
+
+# Import data
+temp_tullinge <- read.csv("https://raw.githubusercontent.com/STIMALiU/AdvMLCourse/master/GaussianProcess/Code/TempTullinge.csv", header=TRUE, sep=";")
+
+# Create variables
+time <- seq(from = 1,
+            to = 365*6,
+            by = 5)
+day <- rep(
+  x = seq(from = 1,
+          to = 365,
+          by = 5),
+  times = 6
+  )
+
+# Extract temperatures for every fifth day
+temp_time <- temp_tullinge$temp[time]
+
+############## Task 2.2.1 #############
+
+# Create data variables
+x <- 1
+x_star <- 2
+
+# Instantiate kernel
+kernel <- nested_squared_exponential(sigma_f = 1, l = 0.3)
+
+# Evaluate kernel on x = 1, x_star = 2
+variance <- kernel(x = x,
+                     y = x_star)
+
+# Create data variables
+x <- c(1, 3, 4)
+x_star <- c(2, 3, 4)
+
+covariance_matrix <- kernelMatrix(x = x,
+                                  y = x_star,
+                                  kernel = kernel)
+
+############## Task 2.2.2 #############
+
+# Generate standard deviation of measurements 
+# by computing the standard deviation of the
+# residuals from a linear quadratic regression,
+# fitted on: temp ~ time + time^2
+fit <- lm(temp_time ~ time + time^2)
+sigma_n <- sd(fit$residuals)
+
+# Set hyperparameters
+sigma_f <- 20
+l <- 0.2
+
+# Fit Gaussian Process regression
+GP.fit <- gausspr(x = time,
+                  y = temp_time,
+                  kernel = nested_squared_exponential,
+                  kpar = list(sigma_f = sigma_f, l = l),
+                  var = sigma_n^2)
+
+# Predict via fitted Gaussian Process regression
+GP.mean_task2 <- predict(GP.fit, time)
+
+# Visualize prediction
+visualize_GP(mean = GP.mean_task2,
+             interval = time,
+             observations = data.frame(x = time, y = temp_time))
+
+############## Task 2.2.3 #############
+
+# Instantiate kernel
+kernel <- nested_squared_exponential(sigma_f = 1, l = 0.3)
+
+# Use own implemented function to generate variances
+# of the mean posterior
+GP.pred <- posterior_GP(x = scale(time),
+                        y = scale(temp_time),
+                        x_star = scale(seq(from = 1, to = 365*6, by = 1)),
+                        kernel = kernel,
+                        sigma_n = sigma_n,
+                        sigma_f = sigma_f,
+                        l = l)
+
+# Visualize prediction
+visualize_GP(mean = GP.mean_task2,
+             interval = time,
+             observations = data.frame(x = time, y = temp_time),
+             variance = GP.pred$variance[time])
+
+############## Task 2.2.4 #############
+
+# Set hyperparameters
+sigma_f <- 20
+l <- 0.2
+
+# Fit Gaussian Process regression to day variable
+# Day variable treats same day of the year as the
+# same variable.
+GP.fit <- gausspr(x = day,
+                  y = temp_time,
+                  kernel = nested_squared_exponential,
+                  kpar = list(sigma_f = sigma_f, l = l),
+                  var = sigma_n^2)
+
+# Predict via fitted Gaussian Process regression
+GP.mean_task4 <- predict(GP.fit, day)
+
+# Visualize previous prediction
+visualize_GP(mean = GP.mean_task2,
+             interval = time,
+             observations = data.frame(x = time, y = temp_time),
+             variance = GP.pred$variance[time])
+
+# Add prediction done with day variable to the vizualization
+lines(x = time, y = GP.mean_task4, col = 'green')
+
+############## Task 2.2.5 #############
+# See function: general_periodic_kernel
+
+# Set hyperparameters
+sigma_f <- 20
+l1 <- 1
+l2 <- 20
+d <- 365/sd(time)
+
+# Fit Gaussian Process regression to dtime variable
+# and with the general periodic kernel
+GP.fit <- gausspr(x = time,
+                  y = temp_time,
+                  kernel = general_periodic_kernel,
+                  kpar = list(sigma_f = sigma_f, l1 = l1, l2 = l2, d = d),
+                  var = sigma_n^2)
+
+# Predict via fitted Gaussian Process regression
+GP.mean_task5 <- predict(GP.fit, time)
+
+# Visualize previous prediction
+visualize_GP(mean = GP.mean_task2,
+             interval = time,
+             observations = data.frame(x = time, y = temp_time),
+             variance = GP.pred$variance[time])
+
+# Add prediction done with day variable to the vizualization
+lines(x = time, y = GP.mean_task4, col = 'green')
+
+# Add prediction done with time variable and general periodic kernel
+lines(x = time, y =GP.mean_task5, col = 'black')
+
+############## Task 2.3 #############
+
+################ Setup ################
+
+# Import data
+data <- read.csv("https://raw.githubusercontent.com/STIMALiU/AdvMLCourse/master/GaussianProcess/Code/banknoteFraud.csv", header=FALSE, sep=",")
+
+# Set names to columns
+names(data) <- c("varWave","skewWave","kurtWave","entropyWave","fraud")
+data[,5] <- as.factor(data[,5])
+
+# Set seed
+set.seed(12345)
+
+# Split data into train and test set
+train_indices <- sample(1:dim(data)[1], size = 1000,
+                        replace = FALSE)
+data.train <- data[train_indices, ]
+data.test <- data[-train_indices, ]
+
+############## Task 2.3.1 #############
+
+# Fit Gaussian Process classifier
+GP.fit <- gausspr(fraud ~ varWave + skewWave, data = data.train)
+
+# Create grid
+x1 <- seq(from = min(data.train$varWave),
+          to = max(data.train$varWave),
+          length = 100)
+x2 <- seq(from = min(data.train$skewWave),
+          to = max(data.train$skewWave),
+          length = 100)
+gridPoints <- meshgrid(x1, x2)
+gridPoints <- cbind(c(gridPoints$x), c(gridPoints$y))
+gridPoints <- data.frame(gridPoints)
+names(gridPoints) <- c("varWave", "skewWave")
+
+# Predict via fitted Gaussian Process classification
+# on grid
+GP.pred_grid <- predict(GP.fit, gridPoints, type="probabilities")
+
+# Get indices of fraud
+fraud_indices <- which(data.train$fraud == 1)
+
+# Render contour of varWave and skewWave
+contour(x = x1,
+        y = x2,
+        z = matrix(GP.pred_grid[,2], 100, byrow = TRUE), 
+        20,
+        xlab = "varWave", ylab = "skewWave", main = 'Prob(fraud)')
+
+# Add data points of fraud/non-fraud by varWave and skewWave
+points(x = data.train$varWave[fraud_indices],
+       y = data.train$skewWave[fraud_indices],
+       col = "blue")
+points(x = data.train$varWave[-fraud_indices],
+       y = data.train$skewWave[-fraud_indices],
+       col = "red")
+
+# Predict via fitted Gaussian Process classification
+# on training data
+GP.pred_train <- predict(GP.fit, data.train)
+
+# Compute confusion matrix
+confusion_matrix_train <- table(GP.pred_train, data.train$fraud)
+
+# Compute accuracy
+accuracy_train <- sum(diag(confusion_matrix_train))/sum(confusion_matrix_train)
+
+############## Task 2.3.2 #############
+
+# Predict via fitted Gaussian Process classification
+# on testing data
+GP.pred_test <- predict(GP.fit, data.test)
+
+# Compute confusion matrix
+confusion_matrix_test <- table(GP.pred_test, data.test$fraud)
+
+# Compute accuracy
+accuracy_test <- sum(diag(confusion_matrix_train))/sum(confusion_matrix_train)
+
+############## Task 2.3.3 #############
+
+# Fit Gaussian Process classifier on all variables
+GP.fit_all_var <- gausspr(fraud ~., data = data.train)
+
+# Predict via fitted Gaussian Process classification
+# on testing data
+GP.pred_all_var <- predict(GP.fit_all_var, data.test)
+
+# Compute confusion matrix
+confusion_matrix_test_all_var <- table(GP.pred_all_var, data.test$fraud)
+
+# Compute accuracy
+accuracy_test_all_var <- sum(diag(confusion_matrix_test_all_var))/sum(confusion_matrix_test_all_var)
