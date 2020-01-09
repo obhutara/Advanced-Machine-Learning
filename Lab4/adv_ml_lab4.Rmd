@@ -130,7 +130,7 @@ sigmaNoise <- sd(resid(fit))
 sigmaNoise
 
 # gp with square exp kernel
-sigf <- 30
+sigf <- 20
 l <- 0.2
 hyperParam <- c(sigf,l)
 kern = mykern(sigf,l)
